@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 # This file is part of Ansible
 #
 # Ansible is free software: you can redistribute it and/or modify
@@ -17,19 +17,25 @@
 DOCUMENTATION = '''
 ---
 module: ec2_asg_find
-short_description: Find autoscale groups.
+short_description: Find auto scaling groups by name and/or tags
 description:
-    - Find autoscale groups by name and retrieve the properties of each one.
-version_added: "0.1"
-author: Allen Sanabria <asanabria@linuxdynasty.org>
+  - Searches for and returns list of matching auto scaling groups with comprehensive details
+  - Can search by matching name and/or tag(s)
+  - If no criteria are specified, will return a list of all auto scaling groups in the specified region
+version_added: "2.1"
+author: "Allen Sanabria (@linuxdynasty), Tom Bamford (@tombamford)"
 options:
   name:
     description:
-      - The prefix or name of the auto scale groups you are searching for.
-    required: true
+      - The prefix or name of the auto scaling group(s) you are searching for.
+    required: false
+  tags:
+    description:
+      - "A dictionary/hash of tags in the format { tag1_name: 'tag1_value', tag2_name: 'tag2_value' } to match against the auto scaling group(s) you are searching for."
+    required: false
   no_result_action:
     description:
-      - If no results are return, you can either fail or succeed.
+      - If no results are returned, you can return either success (with empty results) or failure.
     required: false
     default: fail
     choices: [ 'success', 'fail' ]
@@ -43,46 +49,70 @@ extends_documentation_fragment:
 '''
 
 EXAMPLES = '''
-# Find a an AutoScaleGroup with name
-- local_action:
-    module: ec2_asg_find
-    name: public-webserver-asg
-  register: asg
+# Note: These examples do not set authentication details, see the AWS Guide for details.
 
-# Fail if no AutoScaleGroups are found with name.
-- local_action:
+# Find all groups
+- local_acton:
     module: ec2_asg_find
+  register: asgs
+
+# Find a group with matching name/prefix
+- ec2_asg_find:
+    name: public-webserver-asg
+  register: asgs
+
+# Find a group with matching tags
+- ec2_asg_find:
+    tags:
+      project: webapp
+      env: production
+  register: asgs
+
+# Find a group with matching name/prefix and tags
+- ec2_asg_find:
+    name: myproject
+    tags:
+      env: production
+  register: asgs
+
+# Fail if no groups are found
+- ec2_asg_find:
     name: public-webserver-asg
     no_result_action: fail
-  register: asg
+  register: asgs
 
-# Fail if more than the limit of 3 AutoScaleGroups is found.
-- local_action:
-    module: ec2_asg_find
+# Fail if more than the limit of 3 groups is found.
+- ec2_asg_find:
     name: public-webserver-asg
     no_result_action: fail
-    limit_results: 3
-  register: asg
+    limit_results: 1
+  register: asgs
 '''
 
 RETURN = '''
-autoscaling_group_arn:
-    description: The Amazon ARN name of the ASG
+---
+auto_scaling_group_arn:
+    description: The Amazon Resource Name of the ASG
     returned: success
     type: string
-    sample: "arn:aws:autoscaling:us-west-2:722373842436:autoScalingGroup:10787c52-0bcb-427d-82ba-c8e4b008ed2e:autoScalingGroupName/public-webapp-production-1",
+    sample: "arn:aws:autoscaling:us-west-2:722373842436:autoScalingGroup:10787c52-0bcb-427d-82ba-c8e4b008ed2e:autoScalingGroupName/public-webapp-production-1"
+auto_scaling_group_name:
+    description: Name of autoscaling group
+    returned: success
+    type: str
+    sample: "public-webapp-production-1"
 availability_zones:
-    description: List of Availabily Zones that are a part of this ASG.
+    description: List of Availability Zones that are enabled for this ASG.
     returned: success
     type: list
     sample: ["us-west-2a", "us-west-2b", "us-west-2a"]
 created_time:
-    description: The time this ASG was created.
+    description: The date and time this ASG was created, in ISO 8601 format.
     returned: success
     type: string
     sample: "2015-11-25T00:05:36.309Z"
 default_cooldown:
-    description: The default_cooldown time.
+    description: The default cooldown time in seconds.
     returned: success
     type: int
     sample: 300
@@ -97,37 +127,31 @@ health_check_period:
     type: int
     sample: 30
 health_check_type:
-    description: The service you want the health status from, Amazon EC2 or Elastic Load Balancer.
+    description: The service you want the health status from, one of "EC2" or "ELB".
     returned: success
     type: str
     sample: "ELB"
-instance_id:
-    description: The ID of the Amazon EC2 instance you want to use to create the Auto Scaling group.
-    returned: success
-    type: str
-    sample: "i-es22ad25"
 instances:
-    description: List of EC2 instances and its status as it relates to the ASG.
+    description: List of EC2 instances and their status as it relates to the ASG.
     returned: success
     type: list
     sample: [
         {
-            "ProtectedFromScaleIn": "false",
             "availability_zone": "us-west-2a",
-            "group_name": None,
             "health_status": "Healthy",
             "instance_id": "i-es22ad25",
-            "launch_config_name": "public-webapp-production-1",
-            "lifecycle_state": "InService"
+            "launch_configuration_name": "public-webapp-production-1",
+            "lifecycle_state": "InService",
+            "protected_from_scale_in": "false"
         }
     ]
-launch_config_name:
-    description: Name of launch configuration.
+launch_configuration_name:
+    description: Name of launch configuration associated with the ASG.
     returned: success
     type: str
     sample: "public-webapp-production-1"
-load_balancers:
-    description: List of load balancers.
+load_balancer_names:
+    description: List of load balancers names attached to the ASG.
     returned: success
     type: list
     sample: ["elb-webapp-prod"]
@@ -141,236 +165,193 @@ min_size:
     returned: success
     type: int
     sample: 1
-name:
-    description: Name of autoscaling group.
-    returned: success
-    type: str
-    sample: "public-webapp-production-1"
-NewInstancesProtectedFromScaleIn:
-    description: Are new instances protected from the scale in policy
+new_instances_protected_from_scale_in:
+    description: Whether or not new instances a protected from automatic scaling in.
     returned: success
     type: boolean
     sample: "false"
 placement_group:
-    description: Physical location of your cluster placement group created in Amazon EC2.
+    description: Placement group into which instances are launched, if any.
+    returned: success
+    type: str
+    sample: None
+status:
+    description: The current state of the group when DeleteAutoScalingGroup is in progress.
     returned: success
     type: str
     sample: None
 tags:
-    description: List of Tags
+    description: List of tags for the ASG, and whether or not each tag propagates to instances at launch.
     returned: success
     type: list
     sample: [
         {
             "key": "Name",
-            "value": "public-webapp-production-1"
+            "value": "public-webapp-production-1",
+            "resource_id": "public-webapp-production-1",
+            "resource_type": "auto-scaling-group",
+            "propagate_at_launch": "true"
         },
         {
             "key": "env",
-            "value": "production"
+            "value": "production",
+            "resource_id": "public-webapp-production-1",
+            "resource_type": "auto-scaling-group",
+            "propagate_at_launch": "true"
         }
     ]
 termination_policies:
-    description: A list of termination policies.
+    description: A list of termination policies for the group.
     returned: success
     type: str
     sample: ["Default"]
 '''
 
 try:
-    import boto.ec2.autoscale
-    HAS_BOTO=True
+    import boto3
+    HAS_BOTO3 = True
 except ImportError:
-    HAS_BOTO=False
+    HAS_BOTO3 = False
 
-ASG_KEYS = [
-    'default_cooldown', 'instances', 'health_check_period', 'created_time',
-    'availability_zones', 'desired_capacity', 'max_size',
-    'placement_group', 'NewInstancesProtectedFromScaleIn', 'tags',
-    'autoscaling_group_arn', 'min_size', 'vpc_zone_identifier',
-    'load_balancers', 'launch_config_name', 'name', 'termination_policies',
-    'instance_id', 'health_check_type'
-]
+def match_asg_tags(tags_to_match, asg):
+    for key, value in tags_to_match.iteritems():
+        for tag in asg['Tags']:
+            if key == tag['Key'] and value == tag['Value']:
+                break
+        else: return False
+    return True
 
-INSTANCE_KEYS = [
-    'lifecycle_state', 'availability_zone', 'health_status', 'group_name',
-    'instance_id', 'ProtectedFromScaleIn', 'launch_config_name'
-]
-
-TAG_KEYS = ['key', 'value']
-
-def search(asgs, name):
+def find_asgs(conn, name=None, tags=None):
     """
     Args:
-        asgs (ResultSet): List of AutoScalingGroup instances.
-        name (str): The name or prefix of the ASG you are looking for.
-
-    Basic Usage:
-        >>> conn = boto.ec2.autoscale.connect_to_region("us-west-2")
-        >>> asgs = conn.get_all_groups()
-        >>> results = search(asgs, "prod-web-app")
-
-    Returns:
-        List
-    """
-    matched_asgs = []
-    if len(asgs) > 0:
-        for asg in asgs:
-            asg = dict((attr, getattr(asg, attr)) for attr in ASG_KEYS)
-            matched =  re.search(r'^' + name, asg.get('name'))
-            if matched:
-                matched_asgs.append(asg)
-    return matched_asgs
-
-def convert_into_dict(objects, object_keys=None):
-    """
-    Args:
-        objects (ResultSet): List of objects.
-
-    Kwargs:
-        object_keys (list): List of keys you want to pull from the object.
-
-    Basic Usage:
-        >>> conn = boto.ec2.autoscale.connect_to_region("us-west-2")
-        >>> asgs = conn.get_all_groups()
-        >>> tags = convert_into_dict(asgs[0].tags, object_keys=TAG_KEYS)
-
-    Returns:
-        List
-    """
-    results = []
-    if len(objects) > 0:
-        for instance  in objects:
-            instance = dict(
-                (attr, getattr(instance, attr)) for attr in object_keys
-            )
-            results.append(instance)
-    return results
-
-def convert_tags_into_dict(tags):
-    return convert_into_dict(tags, object_keys=TAG_KEYS)
-
-def convert_instances_into_dict(instances):
-    return convert_into_dict(instances, object_keys=INSTANCE_KEYS)
-
-def convert_string_into_list(subnet_ids):
-    """
-    Args:
-        subnet_ids (str): List of subnet ids in a string format
-
-    Basic Usage:
-        >>> subnet_ids = "us-west-2a,us-west-2b,us-west-2c"
-        >>> subnet_ids_in_list = convert_string_into_list(subnet_ids)
-
-    Returns:
-        List
-        [
-            "us-west-2c",
-            "us-west-2b",
-            "us-west-2a"
-        ]
-    """
-    subnet = re.compile(r'^subnet-[a-z0-9]+')
-    formatted_subnets = []
-    if subnet.search(subnet_ids):
-        formatted_subnets = subnet_ids.split(',')
-    return formatted_subnets
-
-def find_asgs(name, conn):
-    """
-    Args:
-        name (str): The name of the asg you are looking for.
-        conn (boto.ec2.autoscale.AutoScaleConnection): Valid ASG Connection.
+        conn (boto3.AutoScaling.Client): Valid Boto3 ASG client.
+        name (str): Optional name of the ASG you are looking for.
+        tags (dict): Optional dictionary of tags and values to search for.
 
     Basic Usage:
         >>> name = 'public-webapp-production'
-        >>> conn = boto.ec2.autoscale.connect_to_region("us-west-2")
+        >>> tags = { 'env': 'production' }
+        >>> conn = boto3.client('autoscaling', region_name='us-west-2')
         >>> results = find_asgs(name, conn)
 
     Returns:
         List
         [
             {
-                "NewInstancesProtectedFromScaleIn": "false",
-                "autoscaling_group_arn": "arn:aws:autoscaling:us-west-2:631972842436:autoScalingGroup:10787c52-0bcb-427d-82ba-c8e4b008ed2e:autoScalingGroupName/public-webapp-production-1",
-                "availability_zones": [
-                    "us-west-2c",
-                    "us-west-2b",
-                    "us-west-2a"
-                ],
-                "created_time": "2015-11-25T00:05:36.309Z",
+                "auto_scaling_group_arn": "arn:aws:autoscaling:us-west-2:275977225706:autoScalingGroup:58abc686-9783-4528-b338-3ad6f1cbbbaf:autoScalingGroupName/public-webapp-production",
+                "auto_scaling_group_name": "public-webapp-production",
+                "availability_zones": ["us-west-2c", "us-west-2b", "us-west-2a"],
+                "created_time": "2016-02-02T23:28:42.481000+00:00",
                 "default_cooldown": 300,
                 "desired_capacity": 2,
                 "enabled_metrics": [],
-                "health_check_period": 300,
+                "health_check_grace_period": 300,
                 "health_check_type": "ELB",
-                "instance_id": None,
-                "instances": [
+                "instances":
+                [
                     {
-                        "ProtectedFromScaleIn": "false",
-                        "availability_zone": "us-west-2a",
-                        "group_name": None,
+                        "availability_zone": "us-west-2c",
                         "health_status": "Healthy",
-                        "instance_id": "i-fc22ad25",
-                        "launch_config_name": "public-webapp-production-1",
+                        "instance_id": "i-047a12cb",
+                        "launch_configuration_name": "public-webapp-production-1",
                         "lifecycle_state": "InService",
+                        "protected_from_scale_in": false
+                    },
+                    {
+                        "availability_zone": "us-west-2a",
+                        "health_status": "Healthy",
+                        "instance_id": "i-7a29df2c",
+                        "launch_configuration_name": "public-webapp-production-1",
+                        "lifecycle_state": "InService",
+                        "protected_from_scale_in": false
                     }
                 ],
-                "launch_config_name": "public-webapp-production-1",
-                "load_balancers": [
-                    "public-webapp-production"
-                ],
-                "max_size": 3,
+                "launch_configuration_name": "public-webapp-production-1",
+                "load_balancer_names": ["public-webapp-production-lb"],
+                "max_size": 4,
                 "min_size": 2,
-                "name": "public-webapp-production-1",
+                "new_instances_protected_from_scale_in": false,
                 "placement_group": None,
-                "tags": [
+                "status": None,
+                "suspended_processes": [],
+                "tags":
+                [
                     {
                         "key": "Name",
-                        "value": "public-webapp-production-1"
+                        "propagate_at_launch": true,
+                        "resource_id": "public-webapp-production",
+                        "resource_type": "auto-scaling-group",
+                        "value": "public-webapp-production"
                     },
                     {
                         "key": "env",
+                        "propagate_at_launch": true,
+                        "resource_id": "public-webapp-production",
+                        "resource_type": "auto-scaling-group",
                         "value": "production"
                     }
                 ],
-                "termination_policies": [
+                "termination_policies":
+                [
                     "Default"
                 ],
-                "vpc_zone_identifier": [
-                    "subnet-7243820e",
-                    "subnet-355ea943",
-                    "subnet-1354911d"
+                "vpc_zone_identifier":
+                [
+                    "subnet-a1b1c1d1",
+                    "subnet-a2b2c2d2",
+                    "subnet-a3b3c3d3"
                 ]
             }
         ]
     """
-    asgs = []
+    asgs = conn.describe_auto_scaling_groups()['AutoScalingGroups']
     matched_asgs = []
-    asg_groups = conn.get_all_groups()
-    matched_asgs = search(asg_groups, name)
-    for asg in matched_asgs:
-        asg['tags'] = convert_tags_into_dict(asg['tags'])
-        asg['instances'] = (
-            convert_instances_into_dict(asg['instances'])
-        )
-        asg['vpc_zone_identifier'] = (
-            convert_string_into_list(asg['vpc_zone_identifier'])
-        )
-        asgs.append(asg)
+    for asg in asgs:
+        if name:
+            name_prog = re.compile(r'^' + name)
+            matched_name = name_prog.search(asg['AutoScalingGroupName'])
+        else: matched_name = True
 
-    return asgs
+        if tags: matched_tags = match_asg_tags(tags, asg)
+        else: matched_tags = True
+
+        if matched_name and matched_tags:
+            asg_details = dict(created_time=asg['CreatedTime'].isoformat())
+            camel_prog = re.compile('(?!^)([A-Z]+)')
+
+            for key in ['AutoScalingGroupARN', 'AutoScalingGroupName', 'AvailabilityZones',
+                        'DefaultCooldown', 'DesiredCapacity', 'HealthCheckGracePeriod',
+                        'HealthCheckType', 'LaunchConfigurationName', 'LoadBalancerNames',
+                        'MaxSize', 'MinSize', 'NewInstancesProtectedFromScaleIn',
+                        'PlacementGroup' 'Status', 'TerminationPolicies']:
+                new_key = camel_prog.sub(r'_\1', key).lower()
+                if key in asg:
+                    asg_details[new_key] = asg[key]
+                else:
+                    asg_details[new_key] = None
+
+            for key in ['EnabledMetrics', 'Instances', 'SuspendedProcesses', 'Tags']:
+                if key in asg:
+                    new_key = camel_prog.sub(r'_\1', key).lower()
+                    asg_details[new_key] = []
+                    for item in asg[key]:
+                        asg_details[new_key].append(dict((camel_prog.sub(r'_\1', k).lower(), v) for k, v in item.iteritems()))
+
+            if 'VPCZoneIdentifier' in asg:
+                asg_details['vpc_zone_identifier'] = asg['VPCZoneIdentifier'].split(',')
+            else:
+                asg_details['vpc_zone_identifier'] = None
+
+            matched_asgs.append(asg_details)
+    return matched_asgs
 
 def main():
     argument_spec = ec2_argument_spec()
     argument_spec.update(
         dict(
-            name=dict(
-                required=True, type='str'
-            ),
-            limit_results=dict(
-                required=False, type='int', default=0
-            ),
+            name=dict(type='str'),
+            tags=dict(type='dict'),
+            limit_results=dict(required=False, type='int', default=0),
             no_result_action = dict(
                 required=False, type='str', default='fail',
                 choices = ['success', 'fail']
@@ -378,24 +359,24 @@ def main():
         )
     )
     module = AnsibleModule(argument_spec=argument_spec)
+
+    if not HAS_BOTO3:
+        module.fail_json(msg='boto3 required for this module')
+
     asg_name = module.params.get('name')
+    asg_tags = module.params.get('tags')
     no_result_action = module.params.get('no_result_action')
     limit_results = module.params.get('limit_results')
-    region, ec2_url, aws_connect_params = get_aws_connection_info(module)
-    try:
-        conn = connect_to_aws(boto.ec2.autoscale, region, **aws_connect_params)
-        if not conn:
-            msg = (
-                "failed to connect to AWS for the given region: {0}".
-                format(str(region))
-            )
-            module.fail_json(msg=msg)
-    except boto.exception.NoAuthHandlerFound, e:
-        module.fail_json(msg=str(e))
 
-    results = find_asgs(asg_name, conn)
+    try:
+        region, ec2_url, aws_connect_kwargs = get_aws_connection_info(module, boto3=True)
+        autoscaling = boto3_conn(module, conn_type='client', resource='autoscaling', region=region, endpoint=ec2_url, **aws_connect_kwargs)
+    except boto.exception.NoAuthHandlerFound, e:
+        module.fail_json(msg="Can't authorize connection - " + str(e))
+
+    results = find_asgs(autoscaling, name=asg_name, tags=asg_tags)
     if limit_results > 0 and len(results) > limit_results:
-        asg_names = map(lambda asg: asg.get('name'), results)
+        asg_names = [a['auto_scaling_group_name'] for a in results]
         msg = (
             "More than {0} ASG with name={1} found.".
             format(str(limit_results), name)
@@ -403,8 +384,7 @@ def main():
         module.fail_json(msg=msg, asg_names=asg_names)
 
     elif no_result_action == 'fail' and not results:
-        msg = "No results found for {0}.".format(name)
-        module.fail_json(msg=msg)
+        module.fail_json(msg='No results found')
 
     elif not results and no_result_action == 'success':
         output = {
