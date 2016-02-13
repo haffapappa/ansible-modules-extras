@@ -379,7 +379,7 @@ def main():
         asg_names = [a['auto_scaling_group_name'] for a in results]
         msg = (
             "More than {0} ASG with name={1} found.".
-            format(str(limit_results), name)
+            format(str(limit_results), asg_name)
         )
         module.fail_json(msg=msg, asg_names=asg_names)
 
