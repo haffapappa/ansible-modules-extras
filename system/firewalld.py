@@ -56,7 +56,8 @@ options:
   permanent:
     description:
       - "Should this configuration be in the running firewalld configuration or persist across reboots."
-    required: true
+    required: false
+    default: null
   immediate:
     description:
       - "Should this configuration be applied immediately, if set as permanent"
@@ -96,9 +97,13 @@ try:
     import firewall.config
     FW_VERSION = firewall.config.VERSION
 
+    from firewall.client import Rich_Rule
     from firewall.client import FirewallClient
     fw = FirewallClient()
-    HAS_FIREWALLD = True
+    if not fw.connected:
+        HAS_FIREWALLD = False
+    else:
+        HAS_FIREWALLD = True
 except ImportError:
     HAS_FIREWALLD = False
 
@@ -200,6 +205,9 @@ def set_service_disabled_permanent(zone, service):
 # rich rule handling
 #
 def get_rich_rule_enabled(zone, rule):
+    # Convert the rule string to standard format
+    # before checking whether it is present
+    rule = str(Rich_Rule(rule_str=rule))
     if rule in fw.getRichRules(zone):
         return True
     else:
@@ -214,6 +222,9 @@ def set_rich_rule_disabled(zone, rule):
 def get_rich_rule_enabled_permanent(zone, rule):
     fw_zone = fw.config().getZoneByName(zone)
     fw_settings = fw_zone.getSettings()
+    # Convert the rule string to standard format
+    # before checking whether it is present
+    rule = str(Rich_Rule(rule_str=rule))
     if rule in fw_settings.getRichRules():
         return True
     else:

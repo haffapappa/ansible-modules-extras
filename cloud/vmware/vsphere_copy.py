@@ -102,7 +102,7 @@ def main():
         argument_spec = dict(
             host = dict(required=True, aliases=[ 'hostname' ]),
             login = dict(required=True, aliases=[ 'username' ]),
-            password = dict(required=True),
+            password = dict(required=True, no_log=True),
             src = dict(required=True, aliases=[ 'name' ]),
             datacenter = dict(required=True),
             datastore = dict(required=True),
@@ -137,8 +137,9 @@ def main():
     }
 
     try:
-        r = open_url(module, url, data=data, headers=headers, method='PUT',
-                url_username=login, url_password=password, validate_certs=validate_certs)
+        r = open_url(url, data=data, headers=headers, method='PUT',
+                url_username=login, url_password=password, validate_certs=validate_certs,
+                force_basic_auth=True)
     except socket.error, e:
         if isinstance(e.args, tuple) and e[0] == errno.ECONNRESET:
             # VSphere resets connection if the file is in use and cannot be replaced

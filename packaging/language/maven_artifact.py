@@ -294,14 +294,14 @@ def main():
         argument_spec = dict(
             group_id = dict(default=None),
             artifact_id = dict(default=None),
-            version = dict(default=None),
+            version = dict(default="latest"),
             classifier = dict(default=None),
             extension = dict(default='jar'),
             repository_url = dict(default=None),
             username = dict(default=None),
             password = dict(default=None),
             state = dict(default="present", choices=["present","absent"]), # TODO - Implement a "latest" state
-            dest = dict(default=None),
+            dest = dict(type="path", default=None),
             validate_certs = dict(required=False, default=True, type='bool'),
         )
     )
@@ -332,7 +332,10 @@ def main():
     if os.path.isdir(dest):
         dest = dest + "/" + artifact_id + "-" + version + "." + extension
     if os.path.lexists(dest):
-        prev_state = "present"
+        if not artifact.is_snapshot():
+            prev_state = "present"
+        elif downloader.verify_md5(dest, downloader.find_uri_for_artifact(artifact) + '.md5'):
+            prev_state = "present"
     else:
         path = os.path.dirname(dest)
         if not os.path.exists(path):

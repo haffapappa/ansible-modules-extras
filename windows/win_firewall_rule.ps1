@@ -98,6 +98,7 @@ function getFirewallRule ($fwsettings) {
             $msg += @("No rule could be found");
         };
         $result = @{
+            failed = $false
             exists = $exists
             identical = $correct
             multiple = $multi
@@ -137,6 +138,7 @@ function createFireWallRule ($fwsettings) {
         $msg+=@("Created firewall rule $name");
 
         $result=@{
+            failed = $false
             output=$output
             changed=$true
             msg=$msg
@@ -205,6 +207,7 @@ $direction=Get-Attr $params "direction" "";
 $force=Get-Attr $params "force" $false;
 $action=Get-Attr $params "action" "";
 
+$misArg = ''
 # Check the arguments
 if ($enable -ne $null) {
     if ($enable -eq $true) {
@@ -262,7 +265,7 @@ foreach ($arg in $args){
 $winprofile=Get-Attr $params "profile" "current";
 $fwsettings.Add("profile", $winprofile)
 
-if ($($($misArg|measure).count) -gt 0){
+if ($misArg){
     $result=New-Object psobject @{
         changed=$false
         failed=$true

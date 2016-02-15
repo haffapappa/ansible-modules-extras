@@ -309,14 +309,16 @@ class AnsibleCloudStackSecurityGroupRule(AnsibleCloudStack):
         res  = None
         sg_type = self.module.params.get('type')
         if sg_type == 'ingress':
-            rule = self._get_rule(security_group['ingressrule'])
+            if 'ingressrule' in security_group:
+                rule = self._get_rule(security_group['ingressrule'])
             if not rule:
                 self.result['changed'] = True
                 if not self.module.check_mode:
                     res = self.cs.authorizeSecurityGroupIngress(**args)
 
         elif sg_type == 'egress':
-            rule = self._get_rule(security_group['egressrule'])
+            if 'egressrule' in security_group:
+                rule = self._get_rule(security_group['egressrule'])
             if not rule:
                 self.result['changed'] = True
                 if not self.module.check_mode:
@@ -384,7 +386,7 @@ def main():
         end_port = dict(type='int', default=None),
         state = dict(choices=['present', 'absent'], default='present'),
         project = dict(default=None),
-        poll_async = dict(choices=BOOLEANS, default=True),
+        poll_async = dict(type='bool', default=True),
     ))
     required_together = cs_required_together()
     required_together.extend([
@@ -417,7 +419,7 @@ def main():
 
         result = acs_sg_rule.get_result(sg_rule)
 
-    except CloudStackException, e:
+    except CloudStackException as e:
         module.fail_json(msg='CloudStackException: %s' % str(e))
 
     module.exit_json(**result)

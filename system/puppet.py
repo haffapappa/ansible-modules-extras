@@ -19,6 +19,16 @@ import os
 import pipes
 import stat
 
+try:
+    import json
+except ImportError:
+    try:
+        import simplejson as json
+    except ImportError:
+        # Let snippet from module_utils/basic.py return a proper error in this case
+        pass
+
+
 DOCUMENTATION = '''
 ---
 module: puppet
@@ -38,16 +48,10 @@ options:
     required: false
     default: None
   manifest:
-    desciption:
+    description:
       - Path to the manifest file to run puppet apply on.
     required: false
     default: None
-  show_diff:
-    description:
-      - Should puppet return diffs of changes applied. Defaults to off to avoid leaking secret changes by default.
-    required: false
-    default: no
-    choices: [ "yes", "no" ]
   facts:
     description:
       - A dict of values to pass in as persistent external facter facts
@@ -63,6 +67,13 @@ options:
       - Puppet environment to be used.
     required: false
     default: None
+  logdest:
+    description:
+      - Where the puppet logs should go, if puppet apply is being used
+    required: false
+    default: stdout
+    choices: [ 'stdout', 'syslog' ]
+    version_added: "2.1"
 requirements: [ puppet ]
 author: "Monty Taylor (@emonty)"
 '''
@@ -107,7 +118,11 @@ def main():
             timeout=dict(default="30m"),
             puppetmaster=dict(required=False, default=None),
             manifest=dict(required=False, default=None),
+            logdest=dict(
+                required=False, default=['stdout'],
+                choices=['stdout', 'syslog']),
             show_diff=dict(
+                # internal code to work with --diff, do not use
                 default=False, aliases=['show-diff'], type='bool'),
             facts=dict(default=None),
             facter_basename=dict(default='ansible'),
@@ -127,6 +142,9 @@ def main():
         module.fail_json(
             msg="Could not find puppet. Please ensure it is installed.")
 
+    global TIMEOUT_CMD
+    TIMEOUT_CMD = module.get_bin_path("timeout", False)
+
     if p['manifest']:
         if not os.path.exists(p['manifest']):
             module.fail_json(
@@ -139,7 +157,8 @@ def main():
             PUPPET_CMD + " config print agent_disabled_lockfile")
         if os.path.exists(stdout.strip()):
             module.fail_json(
-                msg="Puppet agent is administratively disabled.", disabled=True)
+                msg="Puppet agent is administratively disabled.",
+                disabled=True)
         elif rc != 0:
             module.fail_json(
                 msg="Puppet agent state could not be determined.")
@@ -150,13 +169,18 @@ def main():
             module.params['facter_basename'],
             module.params['facts'])
 
-    base_cmd = "timeout -s 9 %(timeout)s %(puppet_cmd)s" % dict(
-        timeout=pipes.quote(p['timeout']), puppet_cmd=PUPPET_CMD)
+    if TIMEOUT_CMD:
+        base_cmd = "%(timeout_cmd)s -s 9 %(timeout)s %(puppet_cmd)s" % dict(
+            timeout_cmd=TIMEOUT_CMD,
+            timeout=pipes.quote(p['timeout']),
+            puppet_cmd=PUPPET_CMD)
+    else:
+        base_cmd = PUPPET_CMD
 
     if not p['manifest']:
         cmd = ("%(base_cmd)s agent --onetime"
-               " --ignorecache --no-daemonize --no-usecacheonfailure --no-splay"
-               " --detailed-exitcodes --verbose") % dict(
+               " --ignorecache --no-daemonize --no-usecacheonfailure"
+               " --no-splay --detailed-exitcodes --verbose") % dict(
                    base_cmd=base_cmd,
                    )
         if p['puppetmaster']:
@@ -171,6 +195,8 @@ def main():
             cmd += " --no-noop"
     else:
         cmd = "%s apply --detailed-exitcodes " % base_cmd
+        if p['logdest'] == 'syslog':
+            cmd += "--logdest syslog "
         if p['environment']:
             cmd += "--environment '%s' " % p['environment']
         if module.check_mode:

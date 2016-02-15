@@ -57,6 +57,7 @@ options:
             - A value showing who or what started the task (for informational purposes)
         required: False
 extends_documentation_fragment:
+    - aws
     - ec2
 '''
 
@@ -98,7 +99,6 @@ task:
     sample: "TODO: include sample"
 '''
 try:
-    import json
     import boto
     import botocore
     HAS_BOTO = True
@@ -123,7 +123,7 @@ class EcsExecManager:
                 module.fail_json(msg="Region must be specified as a parameter, in EC2_REGION or AWS_REGION environment variables or in boto configuration file")
             self.ecs = boto3_conn(module, conn_type='client', resource='ecs', region=region, endpoint=ec2_url, **aws_connect_kwargs)
         except boto.exception.NoAuthHandlerFound, e:
-            self.module.fail_json(msg="Can't authorize connection - "+str(e))
+            module.fail_json(msg="Can't authorize connection - "+str(e))
 
     def list_tasks(self, cluster_name, service_name, status):
         response = self.ecs.list_tasks(

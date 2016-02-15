@@ -18,9 +18,6 @@
 # You should have received a copy of the GNU General Public License
 # along with this software.  If not, see <http://www.gnu.org/licenses/>.
 
-# import module snippets
-from ansible.module_utils.basic import *
-
 BINS = dict(
     ipv4='iptables',
     ipv6='ip6tables',
@@ -54,12 +51,14 @@ options:
     default: filter
     choices: [ "filter", "nat", "mangle", "raw", "security" ]
   state:
-    description: Whether the rule should be absent or present.
+    description:
+      - Whether the rule should be absent or present.
     required: false
     default: present
     choices: [ "present", "absent" ]
   ip_version:
-    description: Which version of the IP protocol this rule should apply to.
+    description:
+      - Which version of the IP protocol this rule should apply to.
     required: false
     default: ipv4
     choices: [ "ipv4", "ipv6" ]
@@ -212,6 +211,11 @@ options:
     description:
       - "Specifies the maximum average number of matches to allow per second. The number can specify units explicitly, using `/second', `/minute', `/hour' or `/day', or parts of them (so `5/second' is the same as `5/s')."
     required: false
+  limit_burst:
+    version_added: "2.1"
+    description:
+      - "Specifies the maximum burst before the above limit kicks in."
+    required: false
 '''
 
 EXAMPLES = '''
@@ -237,21 +241,15 @@ def append_param(rule, param, flag, is_list):
         if param is not None:
             rule.extend([flag, param])
 
-def append_comm(rule, param):
+
+def append_csv(rule, param, flag):
     if param:
-        rule.extend(['-m'])
-        rule.extend(['comment'])
+        rule.extend([flag, ','.join(param)])
 
 
-def append_conntrack(rule, param):
+def append_match(rule, param, match):
     if param:
-        rule.extend(['-m'])
-        rule.extend(['state'])
-
-def append_limit(rule, param):
-    if param:
-        rule.extend(['-m'])
-        rule.extend(['limit'])
+        rule.extend(['-m', match])
 
 
 def construct_rule(params):
@@ -269,13 +267,13 @@ def construct_rule(params):
     append_param(rule, params['source_port'], '--source-port', False)
     append_param(rule, params['destination_port'], '--destination-port', False)
     append_param(rule, params['to_ports'], '--to-ports', False)
-    append_comm(rule, params['comment'])
+    append_match(rule, params['comment'], 'comment')
     append_param(rule, params['comment'], '--comment', False)
-    if params['ctstate']:
-        append_conntrack(rule, params['ctstate'])
-        append_param(rule, ','.join(params['ctstate']), '--state', False)
-    append_limit(rule, params['limit'])
+    append_match(rule, params['ctstate'], 'state')
+    append_csv(rule, params['ctstate'], '--state')
+    append_match(rule, params['limit'] or params['limit_burst'], 'limit')
     append_param(rule, params['limit'], '--limit', False)
+    append_param(rule, params['limit_burst'], '--limit-burst', False)
     return rule
 
 
@@ -327,6 +325,7 @@ def main():
             comment=dict(required=False, default=None, type='str'),
             ctstate=dict(required=False, default=[], type='list'),
             limit=dict(required=False, default=None, type='str'),
+            limit_burst=dict(required=False, default=None, type='str'),
         ),
     )
     args = dict(
@@ -360,6 +359,9 @@ def main():
         remove_rule(iptables_path, module, module.params)
 
     module.exit_json(**args)
+
+# import module snippets
+from ansible.module_utils.basic import *
 
 if __name__ == '__main__':
     main()

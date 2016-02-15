@@ -23,17 +23,22 @@ DOCUMENTATION = '''
 module: cs_instance
 short_description: Manages instances and virtual machines on Apache CloudStack based clouds.
 description:
-    - Deploy, start, update, scale, restart, stop and destroy instances.
+    - Deploy, start, update, scale, restart, restore, stop and destroy instances.
 version_added: '2.0'
 author: "René Moser (@resmo)"
 options:
   name:
     description:
       - Host name of the instance. C(name) can only contain ASCII letters.
-    required: true
+      - Name will be generated (UUID) by CloudStack if not specified and can not be changed afterwards.
+      - Either C(name) or C(display_name) is required.
+    required: false
+    default: null
   display_name:
     description:
       - Custom display name of the instances.
+      - Display name will be set to C(name) if not specified.
+      - Either C(name) or C(display_name) is required.
     required: false
     default: null
   group:
@@ -46,7 +51,7 @@ options:
       - State of the instance.
     required: false
     default: 'present'
-    choices: [ 'deployed', 'started', 'stopped', 'restarted', 'destroyed', 'expunged', 'present', 'absent' ]
+    choices: [ 'deployed', 'started', 'stopped', 'restarted', 'restored', 'destroyed', 'expunged', 'present', 'absent' ]
   service_offering:
     description:
       - Name or id of the service offering of the new instance.
@@ -220,21 +225,26 @@ EXAMPLES = '''
 - local_action:
     module: cs_instance
     name: web-vm-1
-    display_name: web-vm-01.example.com 
+    display_name: web-vm-01.example.com
     iso: Linux Debian 7 64-bit
     service_offering: 2cpu_2gb
     force: yes
 
-# Create or update a instance on Exoscale's public cloud
+# Create or update a instance on Exoscale's public cloud using display_name.
+# Note: user_data can be used to kickstart the instance using cloud-init yaml config.
 - local_action:
     module: cs_instance
-    name: web-vm-1
+    display_name: web-vm-1
     template: Linux Debian 7 64-bit
     service_offering: Tiny
     ssh_key: john@example.com
     tags:
       - { key: admin, value: john }
       - { key: foo,   value: bar }
+    user_data: |
+        #cloud-config
+        packages:
+          - nginx
 
 # Create an instance with multiple interfaces specifying the IP addresses
 - local_action:
@@ -246,13 +256,13 @@ EXAMPLES = '''
       - {'network': NetworkA, 'ip': '10.1.1.1'}
       - {'network': NetworkB, 'ip': '192.168.1.1'}
 
-# Ensure a instance has stopped
+# Ensure an instance is stopped
 - local_action: cs_instance name=web-vm-1 state=stopped
 
-# Ensure a instance is running
+# Ensure an instance is running
 - local_action: cs_instance name=web-vm-1 state=started
 
-# Remove a instance
+# Remove an instance
 - local_action: cs_instance name=web-vm-1 state=absent
 '''
 
@@ -427,7 +437,7 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
         iso = self.module.params.get('iso')
 
         if not template and not iso:
-            self.module.fail_json(msg="Template or ISO is required.")
+            return None
 
         args                = {}
         args['account']     = self.get_account(key='name')
@@ -479,7 +489,7 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
     def get_instance(self):
         instance = self.instance
         if not instance:
-            instance_name = self.module.params.get('name')
+            instance_name = self.get_or_fallback('name', 'display_name')
 
             args                = {}
             args['account']     = self.get_account(key='name')
@@ -489,10 +499,11 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
             instances = self.cs.listVirtualMachines(**args)
             if instances:
                 for v in instances['virtualmachine']:
-                    if instance_name in [ v['name'], v['displayname'], v['id'] ]:
+                    if instance_name.lower() in [ v['name'].lower(), v['displayname'].lower(), v['id'] ]:
                         self.instance = v
                         break
         return self.instance
+
 
     def get_iptonetwork_mappings(self):
         network_mappings = self.module.params.get('ip_to_networks')
@@ -508,6 +519,7 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
         for i, data in enumerate(network_mappings):
             res.append({'networkid': ids[i], 'ip': data['ip']})
         return res
+
 
     def get_network_ids(self, network_names=None):
         if network_names is None:
@@ -541,25 +553,30 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
         return network_ids
 
 
-    def present_instance(self):
+    def present_instance(self, start_vm=True):
         instance = self.get_instance()
+
         if not instance:
-            instance = self.deploy_instance()
+            instance = self.deploy_instance(start_vm=start_vm)
         else:
-            instance = self.update_instance(instance)
+            instance = self.recover_instance(instance=instance)
+            instance = self.update_instance(instance=instance, start_vm=start_vm)
 
         # In check mode, we do not necessarely have an instance
         if instance:
             instance = self.ensure_tags(resource=instance, resource_type='UserVm')
+            # refresh instance data
+            self.instance = instance
 
         return instance
 
 
     def get_user_data(self):
         user_data = self.module.params.get('user_data')
-        if user_data:
+        if user_data is not None:
             user_data = base64.b64encode(str(user_data))
         return user_data
+
 
     def get_details(self):
         res = None
@@ -574,6 +591,7 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
             }]
         return res
 
+
     def deploy_instance(self, start_vm=True):
         self.result['changed'] = True
         networkids = self.get_network_ids()
@@ -582,6 +600,9 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
 
         args                        = {}
         args['templateid']          = self.get_template_or_iso(key='id')
+        if not args['templateid']:
+            self.module.fail_json(msg="Template or ISO is required.")
+
         args['zoneid']              = self.get_zone(key='id')
         args['serviceofferingid']   = self.get_service_offering_id()
         args['account']             = self.get_account(key='name')
@@ -622,30 +643,37 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
         return instance
 
 
-    def update_instance(self, instance):
-        args_service_offering                       = {}
-        args_service_offering['id']                 = instance['id']
-        args_service_offering['serviceofferingid']  = self.get_service_offering_id()
+    def update_instance(self, instance, start_vm=True):
+        # Service offering data
+        args_service_offering = {}
+        args_service_offering['id'] = instance['id']
+        if self.module.params.get('service_offering'):
+            args_service_offering['serviceofferingid'] = self.get_service_offering_id()
 
-        args_instance_update                        = {}
-        args_instance_update['id']                  = instance['id']
-        args_instance_update['group']               = self.module.params.get('group')
-        args_instance_update['displayname']         = self.get_or_fallback('display_name', 'name')
-        args_instance_update['userdata']            = self.get_user_data()
-        args_instance_update['ostypeid']            = self.get_os_type(key='id')
+        # Instance data
+        args_instance_update = {}
+        args_instance_update['id'] = instance['id']
+        args_instance_update['userdata'] = self.get_user_data()
+        args_instance_update['ostypeid'] = self.get_os_type(key='id')
+        if self.module.params.get('group'):
+            args_instance_update['group'] = self.module.params.get('group')
+        if self.module.params.get('display_name'):
+            args_instance_update['displayname'] = self.module.params.get('display_name')
 
-        args_ssh_key                                = {}
-        args_ssh_key['id']                          = instance['id']
-        args_ssh_key['keypair']                     = self.module.params.get('ssh_key')
-        args_ssh_key['projectid']                   = self.get_project(key='id')
-        
+        # SSH key data
+        args_ssh_key = {}
+        args_ssh_key['id'] = instance['id']
+        args_ssh_key['projectid'] = self.get_project(key='id')
+        if self.module.params.get('ssh_key'):
+            args_ssh_key['keypair'] = self.module.params.get('ssh_key')
+
+
         if self._has_changed(args_service_offering, instance) or \
            self._has_changed(args_instance_update, instance) or \
            self._has_changed(args_ssh_key, instance):
- 
+
             force = self.module.params.get('force')
             instance_state = instance['state'].lower()
-            
             if instance_state == 'stopped' or force:
                 self.result['changed'] = True
                 if not self.module.check_mode:
@@ -681,8 +709,19 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
                         self.instance = instance
 
                     # Start VM again if it was running before
-                    if instance_state == 'running':
+                    if instance_state == 'running' and start_vm:
                         instance = self.start_instance()
+        return instance
+
+
+    def recover_instance(self, instance):
+        if instance['state'].lower() in [ 'destroying', 'destroyed' ]:
+            self.result['changed'] = True
+            if not self.module.check_mode:
+                res = self.cs.recoverVirtualMachine(id=instance['id'])
+                if 'errortext' in res:
+                    self.module.fail_json(msg="Failed: '%s'" % res['errortext'])
+                instance = res['virtualmachine']
         return instance
 
 
@@ -728,73 +767,82 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
 
     def stop_instance(self):
         instance = self.get_instance()
+        # in check mode intance may not be instanciated
+        if instance:
+            if instance['state'].lower() in ['stopping', 'stopped']:
+                return instance
 
-        if not instance:
-            instance = self.deploy_instance(start_vm=False)
-            return instance
+            if instance['state'].lower() in ['starting', 'running']:
+                self.result['changed'] = True
+                if not self.module.check_mode:
+                    instance = self.cs.stopVirtualMachine(id=instance['id'])
 
-        elif instance['state'].lower() in ['stopping', 'stopped']:
-            return instance
+                    if 'errortext' in instance:
+                        self.module.fail_json(msg="Failed: '%s'" % instance['errortext'])
 
-        if instance['state'].lower() in ['starting', 'running']:
-            self.result['changed'] = True
-            if not self.module.check_mode:
-                instance = self.cs.stopVirtualMachine(id=instance['id'])
-
-                if 'errortext' in instance:
-                    self.module.fail_json(msg="Failed: '%s'" % instance['errortext'])
-
-                poll_async = self.module.params.get('poll_async')
-                if poll_async:
-                    instance = self._poll_job(instance, 'virtualmachine')
+                    poll_async = self.module.params.get('poll_async')
+                    if poll_async:
+                        instance = self._poll_job(instance, 'virtualmachine')
         return instance
 
 
     def start_instance(self):
         instance = self.get_instance()
+        # in check mode intance may not be instanciated
+        if instance:
+            if instance['state'].lower() in ['starting', 'running']:
+                return instance
 
-        if not instance:
-            instance = self.deploy_instance()
-            return instance
+            if instance['state'].lower() in ['stopped', 'stopping']:
+                self.result['changed'] = True
+                if not self.module.check_mode:
+                    instance = self.cs.startVirtualMachine(id=instance['id'])
 
-        elif instance['state'].lower() in ['starting', 'running']:
-            return instance
+                    if 'errortext' in instance:
+                        self.module.fail_json(msg="Failed: '%s'" % instance['errortext'])
 
-        if instance['state'].lower() in ['stopped', 'stopping']:
-            self.result['changed'] = True
-            if not self.module.check_mode:
-                instance = self.cs.startVirtualMachine(id=instance['id'])
-
-                if 'errortext' in instance:
-                    self.module.fail_json(msg="Failed: '%s'" % instance['errortext'])
-
-                poll_async = self.module.params.get('poll_async')
-                if poll_async:
-                    instance = self._poll_job(instance, 'virtualmachine')
+                    poll_async = self.module.params.get('poll_async')
+                    if poll_async:
+                        instance = self._poll_job(instance, 'virtualmachine')
         return instance
 
 
     def restart_instance(self):
         instance = self.get_instance()
+        # in check mode intance may not be instanciated
+        if instance:
+            if instance['state'].lower() in [ 'running', 'starting' ]:
+                self.result['changed'] = True
+                if not self.module.check_mode:
+                    instance = self.cs.rebootVirtualMachine(id=instance['id'])
 
-        if not instance:
-            instance = self.deploy_instance()
-            return instance
+                    if 'errortext' in instance:
+                        self.module.fail_json(msg="Failed: '%s'" % instance['errortext'])
 
-        elif instance['state'].lower() in [ 'running', 'starting' ]:
-            self.result['changed'] = True
-            if not self.module.check_mode:
-                instance = self.cs.rebootVirtualMachine(id=instance['id'])
+                    poll_async = self.module.params.get('poll_async')
+                    if poll_async:
+                        instance = self._poll_job(instance, 'virtualmachine')
 
-                if 'errortext' in instance:
-                    self.module.fail_json(msg="Failed: '%s'" % instance['errortext'])
+            elif instance['state'].lower() in [ 'stopping', 'stopped' ]:
+                instance = self.start_instance()
+        return instance
 
-                poll_async = self.module.params.get('poll_async')
-                if poll_async:
-                    instance = self._poll_job(instance, 'virtualmachine')
 
-        elif instance['state'].lower() in [ 'stopping', 'stopped' ]:
-            instance = self.start_instance()
+    def restore_instance(self):
+        instance = self.get_instance()
+        self.result['changed'] = True
+        # in check mode intance may not be instanciated
+        if instance:
+            args = {}
+            args['templateid'] = self.get_template_or_iso(key='id')
+            args['virtualmachineid'] = instance['id']
+            res = self.cs.restoreVirtualMachine(**args)
+            if 'errortext' in res:
+                self.module.fail_json(msg="Failed: '%s'" % res['errortext'])
+
+            poll_async = self.module.params.get('poll_async')
+            if poll_async:
+                instance = self._poll_job(res, 'virtualmachine')
         return instance
 
 
@@ -817,13 +865,14 @@ class AnsibleCloudStackInstance(AnsibleCloudStack):
                         self.result['default_ip'] = nic['ipaddress']
         return self.result
 
+
 def main():
     argument_spec = cs_argument_spec()
     argument_spec.update(dict(
-        name = dict(required=True),
+        name = dict(default=None),
         display_name = dict(default=None),
         group = dict(default=None),
-        state = dict(choices=['present', 'deployed', 'started', 'stopped', 'restarted', 'absent', 'destroyed', 'expunged'], default='present'),
+        state = dict(choices=['present', 'deployed', 'started', 'stopped', 'restarted', 'restored', 'absent', 'destroyed', 'expunged'], default='present'),
         service_offering = dict(default=None),
         cpu = dict(default=None, type='int'),
         cpu_speed = dict(default=None, type='int'),
@@ -847,9 +896,9 @@ def main():
         user_data = dict(default=None),
         zone = dict(default=None),
         ssh_key = dict(default=None),
-        force = dict(choices=BOOLEANS, default=False),
+        force = dict(type='bool', default=False),
         tags = dict(type='list', aliases=[ 'tag' ], default=None),
-        poll_async = dict(choices=BOOLEANS, default=True),
+        poll_async = dict(type='bool', default=True),
     ))
 
     required_together = cs_required_together()
@@ -860,6 +909,9 @@ def main():
     module = AnsibleModule(
         argument_spec=argument_spec,
         required_together=required_together,
+        required_one_of = (
+            ['display_name', 'name'],
+        ),
         mutually_exclusive = (
             ['template', 'iso'],
         ),
@@ -880,16 +932,23 @@ def main():
         elif state in ['expunged']:
             instance = acs_instance.expunge_instance()
 
+        elif state in ['restored']:
+            acs_instance.present_instance()
+            instance = acs_instance.restore_instance()
+
         elif state in ['present', 'deployed']:
             instance = acs_instance.present_instance()
 
         elif state in ['stopped']:
+            acs_instance.present_instance(start_vm=False)
             instance = acs_instance.stop_instance()
 
         elif state in ['started']:
+            acs_instance.present_instance()
             instance = acs_instance.start_instance()
 
         elif state in ['restarted']:
+            acs_instance.present_instance()
             instance = acs_instance.restart_instance()
 
         if instance and 'state' in instance and instance['state'].lower() == 'error':
@@ -897,7 +956,7 @@ def main():
 
         result = acs_instance.get_result(instance)
 
-    except CloudStackException, e:
+    except CloudStackException as e:
         module.fail_json(msg='CloudStackException: %s' % str(e))
 
     module.exit_json(**result)
