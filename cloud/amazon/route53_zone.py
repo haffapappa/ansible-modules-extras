@@ -237,7 +237,7 @@ def main():
         try:
             create_result = route53.create_hosted_zone(Name=zone_in, **record)
         except botocore.exceptions.ClientError, e:
-            module.fail_json(msg=e.response['Error']['Message'])
+            module.fail_json(msg=e.response['Error'])
 
         result = dict(
             zone_id=create_result['HostedZone']['Id'].replace('/hostedzone/', ''),
